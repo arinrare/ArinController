@@ -1,0 +1,6 @@
+package-as: ArinController
+ignore:
+  - README.md
+  - .gitignore
+  - .git/**
+  - .codebase-memory/**

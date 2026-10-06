@@ -1,0 +1,27 @@
+## Interface: 16001
+## Title: |cff33ccffArinController|r
+## Notes: Extra action slots for controller back paddles (Xbox Elite, DualSense Edge, Steam Input back buttons) and controller profiles, built into WoW: Forever's native gamepad crossbar.
+## Author: Arinrare
+## Version: 0.9.2
+## IconTexture: Interface\AddOns\ArinController\Media\Icon.tga
+## X-License: MIT
+## X-Website: https://github.com/arinrare/ArinController
+## X-Category: Action Bars
+## Category: Action Bars
+
+## SavedVariables: ArinControllerDB
+## SavedVariablesPerCharacter: ArinControllerCharDB
+
+Core.lua
+Database.lua
+Profiles.lua
+ActionStorage.lua
+Buttons.lua
+FocusRouting.lua
+Layers.lua
+RawInput.lua
+Panels.lua
+PaddleKeys.lua
+Diagnostics.lua
+Settings.lua
+ArinController.lua
