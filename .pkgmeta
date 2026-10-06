@@ -3,4 +3,8 @@ ignore:
   - README.md
   - .gitignore
   - .git/**
+  - .github/**
   - .codebase-memory/**
+  - Media/Crossbar1.jpg
+  - Media/Crossbar2.jpg
+  - Media/Settings.jpg
