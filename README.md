@@ -41,6 +41,11 @@ Profiles are saved **per character**. Each profile stores:
   four trigger layers and all three action-bar pages, **except the reserved
   base X/Y/A/B face buttons** (those are system buttons the game keeps; a
   profile never touches them);
+- the **pet utility bar** and the **active stance/form bar** storage ranges;
+- every bound action **by its true type**, including icons Forever allows on
+  the crossbar beyond plain spells and items (pet utilities, stance icons,
+  mounts/critters, flyout wheels) — nothing is dropped because its type is
+  uncommon;
 - the four **paddle inputs** (`P1`-`P4` keys);
 - the 16 **paddle action slots** (4 layers x 4 paddles).
 
@@ -73,7 +78,7 @@ never copied.
 and the last remaining profile cannot be deleted.
 
 Slash equivalents: `/arincontroller profile list|new <elite|standard>|switch
-<id or name>|delete <id or name>|copy <id or name>|slots`.
+<id or name>|delete <id or name>|copy <id or name>|slots|actioninfo [n]`.
 
 ## Settings
 
@@ -175,8 +180,11 @@ character on the account.
   e.g. `/arincontroller keys F13 F14 F15 F16`.
 - `/arincontroller profile list|new <elite|standard>|switch <id or name>|delete
   <id or name>|copy <id or name>` — manage controller profiles.
-- `/arincontroller profile slots` — list the native crossbar storage slot range
-  and the action in every tracked slot (used to validate the range).
+- `/arincontroller profile slots` — list the crossbar/stance/pet storage ranges
+  and the action type in every tracked slot (used to validate the ranges).
+- `/arincontroller profile actioninfo [n]` — print the raw GetActionInfo (type /
+  id / subType) of the tracked slots; useful for reporting bindings that are
+  unusual or not copying.
 - `/arincontroller diag` — print gamepad integration diagnostics.
 - `/arincontroller diag copy` — open the same diagnostics as plain text you can
   select and copy.
@@ -208,3 +216,25 @@ plain text you can Ctrl+C into a bug report.
 See `LICENSE` for the full license and attribution text. ArinController is an
 unofficial fan project and is not affiliated with or endorsed by Blizzard
 Entertainment.
+
+## Releasing
+
+Releases are automated with the BigWigs packager via GitHub Actions
+(`.github/workflows/release.yml`). Pushing a tag builds the addon, uploads it
+to CurseForge, and creates a GitHub Release.
+
+```bash
+git add -A
+git commit -m "Describe your change"
+git tag -a v0.0.2 -m "v0.0.2"
+git push origin main --follow-tags
+```
+
+- The tag name (e.g. `v0.0.2`) becomes the addon version, via
+  `## Version: @project-version@` in the TOC.
+- Tags **must start with `v`** to trigger the workflow.
+- Use `alpha`/`beta` in the tag (e.g. `v0.0.2-beta1`) for a pre-release build.
+- Requires the `CF_API_KEY` repository secret (Settings -> Secrets and variables
+  -> Actions).
+- If a tag push doesn't start the workflow, re-push that tag:
+  `git push origin :refs/tags/<tag> && git push origin <tag>`.

@@ -14,7 +14,7 @@ local PADDLE_COUNT = ns.PADDLE_COUNT
 local Print = ns.Print
 local SafeCall = ns.SafeCall
 
-local PROFILE_VERSION = 3
+local PROFILE_VERSION = 4
 local DEFAULT_PROFILE_ID = "bkp_default"
 
 -- Base face buttons (X/Y/A/B) are game-reserved and live in the slots the
@@ -76,6 +76,62 @@ local function GetCrossbarSlotRange()
     return first, first + (pageSlots * pages) - 1
 end
 
+-- Active stance / druid-rogue-warrior form bar: a separate storage block of
+-- NUM_SLOTS_PER_GAMEPAD_ACTION_BAR slots.
+local function GetStanceSlotRange()
+    if not C_GamepadUI or type(C_GamepadUI.GetFirstGamepadActionBarStorageSlotIndexForActiveStance) ~= "function" then
+        return nil
+    end
+    local first = SafeCall(C_GamepadUI.GetFirstGamepadActionBarStorageSlotIndexForActiveStance)
+    if type(first) ~= "number" then
+        return nil
+    end
+    local constants = Constants and Constants.GamepadActionBarConstants
+    local barSlots = constants and constants.NUM_SLOTS_PER_GAMEPAD_ACTION_BAR or 8
+    barSlots = tonumber(barSlots) or 8
+    if barSlots <= 0 then
+        return nil
+    end
+    return first, first + barSlots - 1
+end
+
+-- Pet utility bar: its own storage block. The range is discovered by walking
+-- forward while the client reports a valid gamepad action storage slot, so the
+-- count does not depend on a constant that may not exist on this build.
+local function GetPetSlotRange()
+    if not C_GamepadUI
+        or type(C_GamepadUI.GetFirstGamepadPetActionStorageSlotIndex) ~= "function"
+        or type(C_GamepadUI.IsValidGamepadActionStorageSlotIndex) ~= "function" then
+        return nil
+    end
+    local first = SafeCall(C_GamepadUI.GetFirstGamepadPetActionStorageSlotIndex)
+    if type(first) ~= "number" then
+        return nil
+    end
+    local last = first - 1
+    for slot = first, first + 15 do
+        if SafeCall(C_GamepadUI.IsValidGamepadActionStorageSlotIndex, slot) then
+            last = slot
+        else
+            break
+        end
+    end
+    if last < first then
+        return nil
+    end
+    return first, last
+end
+
+local function CollectRange(first, last)
+    local slots = {}
+    if type(first) == "number" then
+        for slot = first, last do
+            slots[#slots + 1] = slot
+        end
+    end
+    return slots
+end
+
 local function GetPaddleStorageSlots()
     local live = ns.nativeStorageSlots
     if type(live) == "table" and #live > 0 then
@@ -89,56 +145,80 @@ local function GetPaddleStorageSlots()
 end
 
 local function GetCrossbarSlots()
-    local slots = {}
-    local first, last = GetCrossbarSlotRange()
-    if first then
-        for slot = first, last do
-            slots[#slots + 1] = slot
-        end
-    end
-    return slots
+    return CollectRange(GetCrossbarSlotRange())
 end
 
--- Every slot a profile tracks: the native crossbar range plus the addon's own
--- reserved paddle slots, de-duplicated.
+local function GetStanceSlots()
+    return CollectRange(GetStanceSlotRange())
+end
+
+local function GetPetSlots()
+    return CollectRange(GetPetSlotRange())
+end
+
+-- Every slot a profile tracks: the crossbar pages, the active stance bar, the
+-- pet utility bar, and the addon's own reserved paddle slots, de-duplicated.
+-- The reserved base X/Y/A/B face buttons are never here.
 local function GetTrackedSlots()
     local slots = {}
     local seen = {}
 
-    for _, slot in ipairs(GetCrossbarSlots()) do
-        slots[#slots + 1] = slot
-        seen[slot] = true
-    end
-
-    for _, slot in ipairs(GetPaddleStorageSlots()) do
-        if type(slot) == "number" and not seen[slot] then
-            slots[#slots + 1] = slot
-            seen[slot] = true
+    local function add(list)
+        for _, slot in ipairs(list) do
+            if type(slot) == "number" and not seen[slot] then
+                slots[#slots + 1] = slot
+                seen[slot] = true
+            end
         end
     end
+
+    add(GetCrossbarSlots())
+    add(GetStanceSlots())
+    add(GetPetSlots())
+    add(GetPaddleStorageSlots())
 
     return slots
 end
 
--- Reads the action stored in a slot as a portable descriptor. Returns nil for
--- empty slots and for action kinds the addon cannot recreate.
+-- Reads a slot as a portable descriptor. Every action type is preserved as the
+-- raw GetActionInfo triple, so exotic bindings such as Forever's pet-utility,
+-- stance or flyout icons are never dropped the way a whitelist would be.
 local function ReadSlotDescriptor(slot)
     local actionType, id, subType = SafeCall(GetActionInfo, slot)
-    if actionType == "spell" and id then
-        return { kind = "spell", id = id }
-    elseif actionType == "item" and id then
-        return { kind = "item", id = id }
-    elseif actionType == "macro" and id then
-        return { kind = "macro", id = id }
-    elseif actionType == "companion" and subType == "MOUNT" and id then
-        return { kind = "spell", id = id }
+    if not actionType then
+        return nil
     end
-    return nil
+    return { kind = actionType, id = id, subType = subType }
+end
+
+-- True when the client exposes a pickup that can recreate this action type on
+-- the cursor. A captured slot whose kind we cannot rebuild is left in place
+-- rather than cleared, so no binding is ever destroyed by a profile apply.
+local function CanRestoreKind(kind)
+    if kind == "spell" then
+        return (C_Spell and type(C_Spell.PickupSpell) == "function") or type(PickupSpell) == "function"
+    elseif kind == "item" then
+        return (C_Item and type(C_Item.PickupItem) == "function") or type(PickupItem) == "function"
+    elseif kind == "macro" then
+        return type(PickupMacro) == "function"
+    elseif kind == "companion" then
+        return (C_MountJournal and type(C_MountJournal.Pickup) == "function")
+            or (C_PetJournal and type(C_PetJournal.PickupPet) == "function")
+            or type(PickupCompanion) == "function"
+    elseif kind == "flyout" then
+        return type(PickupFlyout) == "function"
+    elseif kind == "equipmentset" then
+        return (C_EquipmentSet and type(C_EquipmentSet.PickupEquipmentSet) == "function")
+            or type(PickupEquipmentSet) == "function"
+    elseif kind == "pet" then
+        return type(PickupPetAction) == "function"
+    end
+    return false
 end
 
 -- Picks a descriptor back up onto the cursor so it can be dropped into a slot.
 local function PickupDescriptor(descriptor)
-    if not descriptor then
+    if not descriptor or not CanRestoreKind(descriptor.kind) then
         return false
     end
     if descriptor.kind == "spell" then
@@ -155,13 +235,37 @@ local function PickupDescriptor(descriptor)
         end
     elseif descriptor.kind == "macro" then
         return pcall(PickupMacro, descriptor.id)
+    elseif descriptor.kind == "companion" then
+        if descriptor.subType == "MOUNT" and C_MountJournal and type(C_MountJournal.Pickup) == "function" then
+            return pcall(C_MountJournal.Pickup, descriptor.id)
+        elseif descriptor.subType == "CRITTER" and C_PetJournal and type(C_PetJournal.PickupPet) == "function" then
+            return pcall(C_PetJournal.PickupPet, descriptor.id)
+        elseif type(PickupCompanion) == "function" then
+            return pcall(PickupCompanion, descriptor.subType, descriptor.id)
+        end
+    elseif descriptor.kind == "flyout" and type(PickupFlyout) == "function" then
+        return pcall(PickupFlyout, descriptor.id)
+    elseif descriptor.kind == "equipmentset" then
+        if C_EquipmentSet and type(C_EquipmentSet.PickupEquipmentSet) == "function" then
+            return pcall(C_EquipmentSet.PickupEquipmentSet, descriptor.id)
+        elseif type(PickupEquipmentSet) == "function" then
+            return pcall(PickupEquipmentSet, descriptor.id)
+        end
+    elseif descriptor.kind == "pet" and type(PickupPetAction) == "function" then
+        return pcall(PickupPetAction, descriptor.id)
     end
     return false
 end
 
 -- Writes a descriptor into a slot, or clears the slot when descriptor is nil.
+-- A descriptor whose action type has no pickup is left untouched (never
+-- cleared) so no binding is ever destroyed by a profile apply.
 local function WriteSlotDescriptor(slot, descriptor)
     if InCombatLockdown() then
+        return false
+    end
+
+    if descriptor and not CanRestoreKind(descriptor.kind) then
         return false
     end
 
@@ -187,30 +291,77 @@ end
 
 -- Deep-copies the current live gamepad storage into { [slot] = descriptor }.
 -- Always called at switch time, when the action bars are guaranteed loaded.
+-- __slots records every slot in scope (even empty ones) so a restore clears
+-- exactly the range this snapshot captured, and no more.
 local function CaptureNativeState()
-    local state = {}
-    for _, slot in ipairs(GetTrackedSlots()) do
+    local slots = GetTrackedSlots()
+    local state = { __slots = {} }
+    for _, slot in ipairs(slots) do
+        state.__slots[slot] = true
         local descriptor = ReadSlotDescriptor(slot)
         if descriptor then
             state[slot] = descriptor
+        elseif C_ActionBar and type(C_ActionBar.HasAction) == "function" and C_ActionBar.HasAction(slot) then
+            -- The slot visibly holds something GetActionInfo cannot express.
+            -- Record an opaque marker so a restore leaves it alone instead of
+            -- treating it as empty and clearing it.
+            state[slot] = { kind = "__opaque__" }
         end
     end
     return state
 end
 
+-- The slot numbers a captured snapshot may write. Fresh snapshots carry the
+-- exact list in __slots; legacy snapshots (no __slots) fall back to the old
+-- behaviour (crossbar pages + paddle slots) so they never touch stance or pet
+-- ranges they were never captured with.
+local function SnapshotSlotList(state)
+    local out = {}
+    local seen = {}
+    local function add(items)
+        for _, slot in ipairs(items) do
+            if type(slot) == "number" and not seen[slot] then
+                out[#out + 1] = slot
+                seen[slot] = true
+            end
+        end
+    end
+    if state and state.__slots then
+        for slot in pairs(state.__slots) do
+            add({ slot })
+        end
+    else
+        add(GetCrossbarSlots())
+        add(GetPaddleStorageSlots())
+    end
+    return out
+end
+
 -- Re-writes a captured snapshot. A nil snapshot means "leave the live layout
--- alone"; an empty table means "clear every tracked crossbar slot". The paddle
--- slots are only touched while the addon is using native storage for them.
+-- alone"; an empty profile snapshot (__clear) clears every tracked slot. The
+-- paddle slots are only touched while the addon is using native storage.
 local function RestoreNativeState(state)
     if state == nil or InCombatLockdown() then
         return
     end
-    for _, slot in ipairs(GetCrossbarSlots()) do
-        WriteSlotDescriptor(slot, state[slot])
+
+    local slots
+    if state.__clear then
+        slots = GetTrackedSlots()
+    else
+        slots = SnapshotSlotList(state)
     end
-    if ns.nativeStorageEnabled then
+
+    local paddleSet = {}
+    if not ns.nativeStorageEnabled then
         for _, slot in ipairs(GetPaddleStorageSlots()) do
-            WriteSlotDescriptor(slot, state[slot])
+            paddleSet[slot] = true
+        end
+    end
+
+    for _, slot in ipairs(slots) do
+        if not paddleSet[slot] then
+            WriteSlotDescriptor(slot, state.__clear and nil or state[slot])
         end
     end
 end
@@ -255,8 +406,10 @@ end
 
 -- Called on ADDON_LOADED after EnsureCharacterDatabase. Stores whatever is
 -- currently bound as the Default profile, preserving existing bindings. Version
--- 3 adds the native crossbar snapshot; version 1 tables (phantom entries such as
--- "Default (Copy 1)") are still reset the way version 2 did.
+-- 3 added the native crossbar snapshot; version 4 adds the generic action-type
+-- capture (pet utilities, stance/flyout icons) plus the stance and pet storage
+-- ranges. Version 1 tables (phantom entries such as "Default (Copy 1)") are
+-- still reset the way version 2 did.
 local function EnsureProfiles()
     local profiles = ArinControllerCharDB.profiles
     local version = profiles and (tonumber(profiles.version) or 0) or 0
@@ -264,11 +417,10 @@ local function EnsureProfiles()
         return
     end
 
-    -- Real version-2 profiles exist: upgrade them in place. Their crossbar was
-    -- never captured, so it stays nil until the next switch (SaveLiveIntoProfile
-    -- captures at switch time), which leaves the live layout alone rather than
-    -- wiping it.
-    if profiles and version == 2 and profiles.items and next(profiles.items) ~= nil then
+    -- Real version-2/3 profiles exist: upgrade them in place. Their snapshots
+    -- keep working through the __slots fallback, and SwitchProfile re-captures
+    -- with the current scope on the next switch.
+    if profiles and version >= 2 and profiles.items and next(profiles.items) ~= nil then
         profiles.version = PROFILE_VERSION
         return
     end
@@ -357,7 +509,7 @@ local function CreateProfile(controllerType)
         paddleCount = controllerType == "elite" and PADDLE_COUNT or 0,
         paddleKeys = {},
         actions = {},
-        native = {},
+        native = { __clear = true },
     }
     for paddleIndex = 1, PADDLE_COUNT do
         profile.paddleKeys["P" .. paddleIndex] = "NONE"
@@ -427,6 +579,9 @@ local function CopyProfileInto(targetId)
         -- the copied snapshot so they are cleared when the target is applied.
         for _, slot in ipairs(GetPaddleStorageSlots()) do
             nativeCopy[slot] = nil
+            if nativeCopy.__slots then
+                nativeCopy.__slots[slot] = nil
+            end
         end
     else
         target.paddleCount = PADDLE_COUNT
@@ -492,4 +647,6 @@ ns.OnLivePaddleKeyChanged = OnLivePaddleKeyChanged
 -- Read-only diagnostics for validating the tracked slot range in game.
 ns.GetTrackedSlots = GetTrackedSlots
 ns.GetCrossbarSlotRange = GetCrossbarSlotRange
+ns.GetStanceSlotRange = GetStanceSlotRange
+ns.GetPetSlotRange = GetPetSlotRange
 ns.ReadSlotDescriptor = ReadSlotDescriptor

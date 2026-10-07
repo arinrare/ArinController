@@ -177,7 +177,7 @@ local function PrintHelp()
     Print("/arincontroller learn - press P1-P4 in order to map them to PADPADDLE1-4 in the client's gamepad config")
     Print("/arincontroller learn clear - remove the addon's device config again")
     Print("/arincontroller learn force - allow rebinding raw buttons the client already uses (steals them from the native UI)")
-    Print("/arincontroller profile list|new <elite|standard>|switch <id or name>|delete <id or name>|copy <id or name>|slots - manage controller profiles")
+    Print("/arincontroller profile list|new <elite|standard>|switch <id or name>|delete <id or name>|copy <id or name>|slots|actioninfo [n] - manage controller profiles")
 end
 
 SLASH_ARINCONTROLLER1 = "/arincontroller"
@@ -353,24 +353,53 @@ SlashCmdList.ARINCONTROLLER = function(message)
                 Print("Copy failed. The active profile cannot be its own target.")
             end
         elseif subCmd == "slots" then
-            local first, last = ns.GetCrossbarSlotRange and ns.GetCrossbarSlotRange()
-            if first then
-                Print(string.format("Crossbar storage range: %d-%d (%d slots)", first, last, last - first + 1))
-            else
-                Print("Crossbar storage range: unavailable")
+            local function rangeLine(label, rangeFunc)
+                local first, last = rangeFunc()
+                if type(first) == "number" then
+                    Print(string.format("%-8s storage range: %d-%d (%d slots)", label, first, last, last - first + 1))
+                else
+                    Print(string.format("%-8s storage range: unavailable", label))
+                end
+            end
+            if ns.GetCrossbarSlotRange then
+                rangeLine("Crossbar", ns.GetCrossbarSlotRange)
+            end
+            if ns.GetStanceSlotRange then
+                rangeLine("Stance", ns.GetStanceSlotRange)
+            end
+            if ns.GetPetSlotRange then
+                rangeLine("Pet", ns.GetPetSlotRange)
             end
             local tracked = (ns.GetTrackedSlots and ns.GetTrackedSlots()) or {}
-            local captured, empty = 0, 0
+            local bound, empty = 0, 0
             for _, slot in ipairs(tracked) do
                 local descriptor = ns.ReadSlotDescriptor and ns.ReadSlotDescriptor(slot)
                 if descriptor then
-                    captured = captured + 1
-                    Print(string.format("  slot %d = %s %s", slot, descriptor.kind, tostring(descriptor.id)))
+                    bound = bound + 1
+                    Print(string.format("  slot %d = %s%s%s", slot, descriptor.kind,
+                        descriptor.id ~= nil and (" id=" .. tostring(descriptor.id)) or "",
+                        descriptor.subType ~= nil and (" subType=" .. tostring(descriptor.subType)) or ""))
                 else
                     empty = empty + 1
                 end
             end
-            Print(string.format("Tracked slots: %d (%d bound, %d empty)", #tracked, captured, empty))
+            Print(string.format("Tracked slots: %d (%d bound, %d empty)", #tracked, bound, empty))
+        elseif subCmd == "actioninfo" then
+            local requested = tonumber(args[3])
+            local tracked = (ns.GetTrackedSlots and ns.GetTrackedSlots()) or {}
+            local printed = 0
+            for _, slot in ipairs(tracked) do
+                if not requested or slot == requested then
+                    local actionType, id, subType, spellID = GetActionInfo(slot)
+                    Print(string.format("  slot %d: type=%s id=%s subType=%s%s", slot,
+                        tostring(actionType),
+                        tostring(id),
+                        tostring(subType),
+                        (type(spellID) == "number" and spellID > 0) and (" spellID=" .. spellID) or ""))
+                    printed = printed + 1
+                end
+            end
+            Print(printed == 0 and ("No tracked slots" .. (requested and (" matching " .. requested) or "") .. ".") or ("Printed " .. printed .. " slot(s)."))
         else
             PrintHelp()
         end
