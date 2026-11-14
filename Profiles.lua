@@ -13,6 +13,7 @@ local PANEL_COUNT = ns.PANEL_COUNT
 local PADDLE_COUNT = ns.PADDLE_COUNT
 local Print = ns.Print
 local SafeCall = ns.SafeCall
+local IsSecret = ns.IsSecret
 
 local PROFILE_VERSION = 4
 local DEFAULT_PROFILE_ID = "bkp_default"
@@ -183,12 +184,55 @@ end
 -- Reads a slot as a portable descriptor. Every action type is preserved as the
 -- raw GetActionInfo triple, so exotic bindings such as Forever's pet-utility,
 -- stance or flyout icons are never dropped the way a whitelist would be.
+--
+-- Macros need special care: since 10.2 GetActionInfo returns a macro's *spell*
+-- or *item* association instead of its macro index when subType is set (and for
+-- item macros the id is just actionSlot-1, a Blizzard bug). A plain macro
+-- (no subType) still reports its real index. So for macros we also record the
+-- name and, when trustworthy, a resolved macroIndex.
 local function ReadSlotDescriptor(slot)
     local actionType, id, subType = SafeCall(GetActionInfo, slot)
     if not actionType then
         return nil
     end
-    return { kind = actionType, id = id, subType = subType }
+    local descriptor = { kind = actionType, id = id, subType = subType }
+    if actionType == "macro" then
+        local name = SafeCall(GetActionText, slot)
+        if type(name) == "string" and name ~= "" and not (IsSecret and IsSecret(name)) then
+            descriptor.name = name
+        end
+        if subType == nil or subType == "" then
+            -- Plain macro: id is the real macro index.
+            descriptor.macroIndex = id
+        elseif descriptor.name and ns.IsUniqueMacroName and ns.IsUniqueMacroName(descriptor.name) then
+            local index = SafeCall(GetMacroIndexByName, descriptor.name)
+            if type(index) == "number" and index ~= 0 then
+                descriptor.macroIndex = index
+            end
+        end
+    end
+    return descriptor
+end
+
+-- True when a macro descriptor can still be resolved to a real macro. Used to
+-- avoid clearing a slot when the macro is gone or the stored id was the broken
+-- item/spell association.
+local function MacroResolvable(descriptor)
+    if descriptor.macroIndex and SafeCall(GetMacroInfo, descriptor.macroIndex) ~= nil then
+        return true
+    end
+    if descriptor.name and type(GetMacroIndexByName) == "function"
+        and (not ns.IsUniqueMacroName or ns.IsUniqueMacroName(descriptor.name)) then
+        local index = SafeCall(GetMacroIndexByName, descriptor.name)
+        if type(index) == "number" and index ~= 0 then
+            return true
+        end
+    end
+    if (descriptor.subType == nil or descriptor.subType == "") and descriptor.id
+        and SafeCall(GetMacroInfo, descriptor.id) ~= nil then
+        return true
+    end
+    return false
 end
 
 -- True when the client exposes a pickup that can recreate this action type on
@@ -234,7 +278,22 @@ local function PickupDescriptor(descriptor)
             return pcall(PickupItem, descriptor.id)
         end
     elseif descriptor.kind == "macro" then
-        return pcall(PickupMacro, descriptor.id)
+        -- Prefer a trusted macroIndex, then a unique name, then a plain macro's
+        -- id. PickupMacro accepts either a name or an index. A name shared by
+        -- two macros is never used, so we cannot place the wrong one.
+        if descriptor.macroIndex and SafeCall(GetMacroInfo, descriptor.macroIndex) ~= nil then
+            return pcall(PickupMacro, descriptor.macroIndex)
+        elseif descriptor.name and type(GetMacroIndexByName) == "function"
+            and (not ns.IsUniqueMacroName or ns.IsUniqueMacroName(descriptor.name)) then
+            local index = SafeCall(GetMacroIndexByName, descriptor.name)
+            if type(index) == "number" and index ~= 0 then
+                return pcall(PickupMacro, descriptor.name)
+            end
+        elseif (descriptor.subType == nil or descriptor.subType == "") and descriptor.id
+            and SafeCall(GetMacroInfo, descriptor.id) ~= nil then
+            return pcall(PickupMacro, descriptor.id)
+        end
+        return false
     elseif descriptor.kind == "companion" then
         if descriptor.subType == "MOUNT" and C_MountJournal and type(C_MountJournal.Pickup) == "function" then
             return pcall(C_MountJournal.Pickup, descriptor.id)
@@ -266,6 +325,12 @@ local function WriteSlotDescriptor(slot, descriptor)
     end
 
     if descriptor and not CanRestoreKind(descriptor.kind) then
+        return false
+    end
+    -- A macro that no longer resolves (deleted/renamed, or an old snapshot that
+    -- stored the broken item/spell association instead of the macro index) is
+    -- left in place rather than cleared.
+    if descriptor and descriptor.kind == "macro" and not MacroResolvable(descriptor) then
         return false
     end
 

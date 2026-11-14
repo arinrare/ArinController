@@ -49,6 +49,12 @@ Profiles are saved **per character**. Each profile stores:
 - the four **paddle inputs** (`P1`-`P4` keys);
 - the 16 **paddle action slots** (4 layers x 4 paddles).
 
+Macros are stored by **name** (plus a resolved index), because the client's
+`GetActionInfo` returns a macro's item/spell association instead of its macro
+index for item and spell macros. Storing the name makes those macros — like a
+`/use ... Bandage` macro — copy and switch correctly, and it survives macro
+indices shifting.
+
 Switching profiles restores the whole layout, so a profile is a full controller
 setup rather than just the paddles.
 

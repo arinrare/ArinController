@@ -1107,3 +1107,6 @@ ns.CreateActionButton = CreateActionButton
 ns.ForEachButton = ForEachButton
 ns.UpdateAllButtonVisuals = UpdateAllButtonVisuals
 ns.RefreshButtons = RefreshButtons
+-- Used by Profiles.lua to resolve a macro's trustworthy index (two macros may
+-- share a name, so a name is only trusted when it is unique).
+ns.IsUniqueMacroName = IsUniqueMacroName
